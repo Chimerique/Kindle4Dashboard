@@ -64,10 +64,8 @@ done
 log "INFO" "=== Début de mise à jour ==="
 
 cleanup() {
-    # Dashboard désactivé → réactiver la mise en veille normale
-    if [ -f "$FLAG_DISABLED" ]; then
-        lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null || true
-    fi
+    # Toujours réactiver la veille naturelle à la sortie
+    lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null || true
     if [ "$WIFI_ENABLED_BY_SCRIPT" -eq 1 ] && [ "$NO_WIFI" -eq 0 ]; then
         lipc-set-prop com.lab126.wifid enable 0 2>/dev/null || true
         lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null || true
@@ -140,11 +138,13 @@ download_image() {
 
 show_image() {
     log "INFO" "Affichage de l'image"
-    /usr/sbin/eips -c || true
-    sleep 1
-    /usr/sbin/eips -g "$TMP_IMAGE" || true
+    # Copier dans le dossier screensaver linkss (mounté via FUSE sur /opt/amazon/screen_saver/600x800/)
     cp "$TMP_IMAGE" "$SAVE_PATH" 2>/dev/null || log "WARN" "Impossible de sauvegarder $SAVE_PATH"
-    log "INFO" "Affichage initial terminé"
+    # Forcer le passage en screensaver pour afficher le dashboard immédiatement
+    lipc-set-prop com.lab126.powerd screenSaverActivation 1 2>/dev/null || true
+    # Rafraîchir l'affichage e-ink avec notre image (full-refresh)
+    /usr/sbin/eips -f -g "$TMP_IMAGE" 2>/dev/null || /usr/sbin/eips -g "$TMP_IMAGE" || true
+    log "INFO" "Image affichée + screensaver activé"
 }
 
 enable_wifi
