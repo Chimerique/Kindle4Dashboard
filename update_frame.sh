@@ -11,10 +11,7 @@ TMP_IMAGE="${TMP_IMAGE:-/tmp/frame.png}"
 SAVE_PATH="${SAVE_PATH:-/mnt/us/linkss/screensavers/ha_dashboard.png}"
 RETRIES="${RETRIES:-12}"
 SLEEP_SEC="${SLEEP_SEC:-5}"
-# Variables de veille (en secondes) : 3600 = 1 heure
-SLEEP_INTERVAL_SEC="${SLEEP_INTERVAL_SEC:-3600}"
-WAKEALARM_PATH="/sys/devices/platform/pmic_rtc.1/rtc/rtc1/wakealarm"
-
+# Variables de veille : gérées par kindle_scheduler.sh
 WIFI_ENABLED_BY_SCRIPT=0
 
 log() {
@@ -24,14 +21,13 @@ log() {
 
 usage() {
     cat <<EOF
-# Usage: $0 [--url URL] [--interface IF] [--log FILE] [--retries N] [--sleep S] [--no-wifi] [--interval SEC]
+# Usage: $0 [--url URL] [--interface IF] [--log FILE] [--retries N] [--sleep S] [--no-wifi]
   --url       URL to download the image (default: $UPDATE_URL)
   --interface Wi-Fi interface (default: $WIFI_IF)
   --log       Log file (default: $LOG_FILE)
   --retries   Number of IP retries (default: $RETRIES)
   --sleep     Seconds between retries (default: $SLEEP_SEC)
   --no-wifi   Do not enable/disable Wi-Fi (assume network already up)
-  --interval  Seconds between two updates/suspend (default: $SLEEP_INTERVAL_SEC)
   -h, --help  Show this help
 EOF
 }
@@ -58,8 +54,6 @@ while [ $# -gt 0 ]; do
             SLEEP_SEC="$2"; shift 2;;
         --no-wifi)
             NO_WIFI=1; shift;;
-        --interval)
-            SLEEP_INTERVAL_SEC="$2"; shift 2;;
         -h|--help)
             usage; exit 0;;
         *)
@@ -70,34 +64,15 @@ done
 log "INFO" "=== Début de mise à jour ==="
 
 cleanup() {
-    # Dashboard désactivé -> réactiver la mise en veille normale automatique
+    # Dashboard désactivé → réactiver la mise en veille normale
     if [ -f "$FLAG_DISABLED" ]; then
         lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null || true
     fi
-
-    # Wi-Fi off dans tous les cas si le script l'a allumé
     if [ "$WIFI_ENABLED_BY_SCRIPT" -eq 1 ] && [ "$NO_WIFI" -eq 0 ]; then
         lipc-set-prop com.lab126.wifid enable 0 2>/dev/null || true
         lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null || true
         log "INFO" "Wi‑Fi éteint par cleanup"
     fi
-
-    # --- NOUVEAU : MISE EN VEILLE PROFONDE ---
-    if [ ! -f "$FLAG_DISABLED" ]; then
-        log "INFO" "Programmation du prochain réveil dans ${SLEEP_INTERVAL_SEC}s"
-        NOW=$(date +%s)
-        # On remet wakealarm à 0 pour être sûr (nécessaire sur Kindle)
-        echo 0 > "$WAKEALARM_PATH" 2>/dev/null || true
-        # On écrit l'heure UNIX absolue du prochain réveil
-        echo $((NOW + SLEEP_INTERVAL_SEC)) > "$WAKEALARM_PATH" 2>/dev/null || true
-        
-        log "INFO" "Envoi de la demande de mise en veille (suspend)"
-        # On autorise le système à s'endormir (on ne bloque plus avec preventScreenSaver)
-        lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null || true
-        # Commande système pour dormir tout de suite
-        echo "mem" > /sys/power/state 2>/dev/null || true
-    fi
-
     log "INFO" "=== Fin de mise à jour ==="
 }
 
