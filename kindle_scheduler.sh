@@ -1,19 +1,28 @@
 #!/bin/sh
 # kindle_scheduler.sh
-# Orchestrateur du cycle complet de mise à jour du dashboard.
-# Architecture : update → optimisations batterie → RTC alarm → suspend propre
+# Orchestrateur du cycle de mise à jour du dashboard Kindle.
 #
-# Ce script s'exécute UNE SEULE FOIS par cycle. Il n'y a PAS de boucle infinie.
-# Le réveil suivant est programmé dans le matériel (RTC) avant de dormir.
-# Au redémarrage/réveil, le système le relance via init.d.
+# Fonctionnement : boucle infinie avec sleep dynamique selon l'heure.
+# Entre chaque cycle : WiFi off (via update_frame.sh) + preventScreenSaver 0
+# → la liseuse entre en veille naturelle (light sleep), économisant la batterie.
+# preventScreenSaver 1 uniquement pendant la mise à jour de l'image.
+#
+# Pas de boucle infinie si dashboard OFF → on vérifie toutes les POLL_SEC.
+#
+# Variables d'environnement :
+#   NO_WIFI=1      → passe --no-wifi à update_frame.sh (tests SSH)
+#   NO_SUSPEND=1   → ne pas mettre preventScreenSaver à 0 (tests SSH)
 #
 # Usage : sh /mnt/us/kindle_scheduler.sh
 
 FLAG_FILE="/mnt/us/DASHBOARD_DISABLED"
 LOG_FILE="/tmp/scheduler.log"
-RTC_ALARM="/sys/devices/platform/pmic_rtc.1/rtc/rtc1/wakealarm"
 UPDATE_SCRIPT="/mnt/us/update_frame.sh"
 MAX_LOG_LINES=200
+NO_WIFI="${NO_WIFI:-0}"
+NO_SUSPEND="${NO_SUSPEND:-0}"
+# Intervalle de scrutation quand dashboard OFF (en secondes)
+POLL_SEC=60
 
 # ================================================================
 # LOGGING
@@ -50,11 +59,7 @@ get_interval() {
 # LECTURE BATTERIE
 # ================================================================
 get_battery() {
-    # Essais en cascade selon les chemins disponibles sur Kindle 4
-    cat /sys/class/power_supply/battery/capacity 2>/dev/null       && return
-    cat /sys/class/power_supply/*/capacity 2>/dev/null | head -1   && return
-    lipc-get-prop -i com.lab126.powerd battLevel 2>/dev/null       && return
-    echo "?"
+    lipc-get-prop -i com.lab126.powerd battLevel 2>/dev/null || echo "?"
 }
 
 # ================================================================
@@ -72,121 +77,63 @@ set_powersave() {
 }
 
 # ================================================================
-# PROGRAMME L'ALARME RTC
-# Le matériel PMIC (rtc1) réveillera le processeur après $INTERVAL secondes,
-# indépendamment de l'OS.
-# Essai relatif (+N) en premier, fallback absolu si le noyau ne supporte pas.
+# AUTORISER LA VEILLE NATURELLE
+# Après affichage, on relâche le verrou screensaver pour que le Kindle
+# puisse entrer en veille légère (light sleep) entre deux cycles.
+# preventScreenSaver 1 sera remis par update_frame.sh au prochain cycle.
 # ================================================================
-set_rtc_wakeup() {
-    INTERVAL="$1"
-
-    if [ ! -f "$RTC_ALARM" ]; then
-        log "WARN" "wakealarm introuvable : $RTC_ALARM - réveil matériel impossible"
-        return 1
+allow_sleep() {
+    if [ "$NO_SUSPEND" = "1" ]; then
+        log "INFO" "NO_SUSPEND=1 → veille naturelle ignorée (mode test)"
+        return 0
     fi
-
-    # Réinitialisation obligatoire avant de programmer une nouvelle alarme
-    echo 0 > "$RTC_ALARM" 2>/dev/null
-
-    # Tentative relative (supportée par certaines versions du noyau Kindle)
-    echo "+${INTERVAL}" > "$RTC_ALARM" 2>/dev/null
-    ALARM_VAL=$(cat "$RTC_ALARM" 2>/dev/null)
-
-    if [ -z "$ALARM_VAL" ] || [ "$ALARM_VAL" = "0" ]; then
-        # Fallback : timestamp UNIX absolu
-        NOW=$(date +%s)
-        WAKE_AT=$((NOW + INTERVAL))
-        echo "$WAKE_AT" > "$RTC_ALARM" 2>/dev/null
-        log "INFO" "RTC alarme (absolu) programmée à $WAKE_AT (+${INTERVAL}s)"
-    else
-        log "INFO" "RTC alarme (relatif) +${INTERVAL}s OK (val retournée=$ALARM_VAL)"
-    fi
-}
-
-# ================================================================
-# MISE EN VEILLE PROPRE
-# Ordre de tentatives : powerd (Amazon) → kernel mem → abandon
-# L'abandon est non-fatal : la tablette restera éveillée mais au moins
-# le prochain cycle sera correct après réveil RTC.
-# ================================================================
-do_suspend() {
-    log "INFO" "Début procédure de mise en veille..."
-
-    # Autoriser le screensaver/suspend (si on bloquait à 1, le système refusait de dormir)
     lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null || true
-
-    # Couper le WiFi / mode avion avant de dormir
-    lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null || true
-    sleep 2
-    log "INFO" "WiFi coupé"
-
-    # --- Tentative 1 : demande propre via powerd (daemon Amazon) ---
-    # deferSuspend=1 signale à powerd qu'il peut entrer en veille dès qu'il est prêt
-    lipc-set-prop com.lab126.powerd deferSuspend 1 2>/dev/null || true
-    sleep 5
-
-    # --- Tentative 2 : suspend kernel direct ---
-    # ATTENTION : sur certains firmware, echo mem freeze le système si des pilotes
-    # sont mal initialisés. On ne tente que si /sys/power/state existe.
-    if [ -f "/sys/power/state" ]; then
-        STATES=$(cat /sys/power/state 2>/dev/null)
-        if echo "$STATES" | grep -q "mem"; then
-            log "INFO" "Tentative suspend kernel (echo mem)"
-            echo mem > /sys/power/state 2>/dev/null
-            sleep 2
-            # Si on arrive ici après le sleep, on vient de se réveiller
-            log "INFO" "Réveil confirm : retour de mem suspend"
-        else
-            log "WARN" "/sys/power/state ne propose pas 'mem' (valeurs: $STATES)"
-        fi
-    else
-        log "WARN" "/sys/power/state absent - pas de suspend kernel"
-    fi
-
-    # Si on est encore là, le suspend a échoué ou on vient de se réveiller
-    log "INFO" "Procédure de veille terminée"
+    log "INFO" "preventScreenSaver → 0 (veille naturelle autorisée)"
 }
 
 # ================================================================
-# PROGRAMME PRINCIPAL
+# PROGRAMME PRINCIPAL — boucle de cycles
 # ================================================================
-INTERVAL=$(get_interval)
-BATT=$(get_battery)
-
 log "INFO" "============================================"
-log "INFO" "Cycle démarré | heure=$(date '+%H:%M') | intervalle=${INTERVAL}s (~$((INTERVAL/60))min) | batt=${BATT}%"
+log "INFO" "Scheduler démarré | pid=$$"
 
 # Optimisations CPU dès le départ
 set_powersave
 
-# --- Si dashboard désactivé ---
-if [ -f "$FLAG_FILE" ]; then
-    log "INFO" "Dashboard OFF → pas d'update, prochain réveil dans ${INTERVAL}s"
-    set_rtc_wakeup "$INTERVAL"
-    do_suspend
-    log "INFO" "Cycle terminé (dashboard OFF)"
-    exit 0
-fi
+while true; do
+    INTERVAL=$(get_interval)
+    BATT=$(get_battery)
+    HOUR=$(date +%H | awk '{print int($1)}')
 
-# --- Dashboard actif : mise à jour de l'image ---
-if [ -x "$UPDATE_SCRIPT" ]; then
-    log "INFO" "Lancement update_frame.sh..."
-    sh "$UPDATE_SCRIPT"
-    UPDATE_EXIT=$?
-    if [ "$UPDATE_EXIT" -ne 0 ]; then
-        log "WARN" "update_frame.sh a retourné le code $UPDATE_EXIT"
-    else
-        log "INFO" "Update terminé avec succès"
+    # --- Si dashboard désactivé : ne rien faire du tout ---
+    # La liseuse doit rester utilisable normalement par le lecteur.
+    if [ -f "$FLAG_FILE" ]; then
+        log "INFO" "Dashboard OFF | batt=${BATT}% → attente ${POLL_SEC}s"
+        sleep "$POLL_SEC"
+        continue
     fi
-else
-    log "ERROR" "Script update introuvable ou non exécutable : $UPDATE_SCRIPT"
-fi
 
-# --- Programme le prochain réveil ---
-set_rtc_wakeup "$INTERVAL"
+    # --- Dashboard actif : mise à jour ---
+    log "INFO" "--- Cycle heure=${HOUR}h | intervalle=${INTERVAL}s (~$((INTERVAL/60))min) | batt=${BATT}% ---"
 
-# --- Mise en veille ---
-do_suspend
+    if [ -x "$UPDATE_SCRIPT" ]; then
+        UPDATE_ARGS=""
+        [ "$NO_WIFI" = "1" ] && UPDATE_ARGS="--no-wifi"
+        log "INFO" "Lancement update_frame.sh $UPDATE_ARGS"
+        sh "$UPDATE_SCRIPT" $UPDATE_ARGS
+        UPDATE_EXIT=$?
+        if [ "$UPDATE_EXIT" -ne 0 ]; then
+            log "WARN" "update_frame.sh exit=$UPDATE_EXIT"
+        else
+            log "INFO" "Update OK"
+        fi
+    else
+        log "ERROR" "Script update introuvable : $UPDATE_SCRIPT"
+    fi
 
-log "INFO" "Cycle terminé (post-suspend ou échec suspend)"
-exit 0
+    # Autoriser la veille naturelle pendant le sleep (screen off = batterie économisée)
+    allow_sleep
+
+    log "INFO" "Pause ${INTERVAL}s..."
+    sleep "$INTERVAL"
+done
