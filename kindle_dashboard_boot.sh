@@ -15,7 +15,7 @@ echo "=== Installation auto-start dashboard au boot ==="
 
 # 1. Root en lecture-écriture
 echo "--- mntroot rw ---"
-mntroot rw
+/usr/sbin/mntroot rw
 sleep 1
 
 # 2. Créer le script init.d
@@ -67,7 +67,7 @@ echo "Symlink créé : /etc/rcS.d/S99dashboard -> /etc/init.d/dashboard"
 
 # 4. Root en lecture seule
 echo "--- mntroot ro ---"
-mntroot ro
+/usr/sbin/mntroot ro
 
 # 5. Vérification
 echo "=== Vérification ==="
