@@ -66,7 +66,11 @@ done
 log "INFO" "=== Début de mise à jour ==="
 
 cleanup() {
-    lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null || true
+    # Ne remettre le screensaver que si le dashboard est désactivé
+    # (en mode ON il doit rester bloqué pour que la liseuse ne parte pas en veille)
+    if [ -f "$FLAG_DISABLED" ]; then
+        lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null || true
+    fi
     if [ "$WIFI_ENABLED_BY_SCRIPT" -eq 1 ] && [ "$NO_WIFI" -eq 0 ]; then
         lipc-set-prop com.lab126.wifid enable 0 2>/dev/null || true
         lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null || true
