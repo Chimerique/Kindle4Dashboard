@@ -1,10 +1,13 @@
-# Documentation Kindle Dashboard HA
+# Kindle Dashboard HA
 
-## Fonctionnalités principales
-- **Affichage dynamique** : Le dashboard affiche une image générée par Home Assistant en tant qu'économiseur d'écran.
-- **Scheduler dynamique** : Les mises à jour sont planifiées selon des intervalles spécifiques à l'heure de la journée.
-- **Économie d'énergie** : Le WiFi est désactivé entre les cycles, et la veille naturelle est activée après chaque mise à jour.
-- **Toggle bouton Home** : Permet d'activer/désactiver le dashboard avec 3-4 clics rapides.
+## Description
+Kindle Dashboard HA transforme une Kindle 4 en un écran d'affichage dynamique pour Home Assistant. Il utilise l'économiseur d'écran pour afficher une image générée par Home Assistant, tout en optimisant la consommation d'énergie grâce à des cycles de mise à jour planifiés et une gestion intelligente du WiFi.
+
+## Fonctionnalités
+- **Affichage dynamique** : Affiche une image générée par Home Assistant en tant qu'économiseur d'écran.
+- **Scheduler dynamique** : Planifie les mises à jour selon des intervalles spécifiques à l'heure de la journée.
+- **Économie d'énergie** : Désactive le WiFi entre les cycles et active la veille naturelle après chaque mise à jour.
+- **Toggle bouton Home** : Active/désactive le dashboard avec 3-4 clics rapides.
 - **Auto-start au boot** : Les daemons démarrent automatiquement après un redémarrage.
 
 ## Architecture
@@ -34,6 +37,17 @@
 | 17h-20h     | 5 min      |
 | 20h-00h     | 15 min     |
 
+## Installation
+1. **Cloner le dépôt** :
+   ```sh
+   git clone https://github.com/Chimerique/Kindle4Dashboard.git
+   ```
+2. **Configurer les scripts** :
+   - Modifier les variables dans `.env` si nécessaire.
+3. **Déployer sur Kindle** :
+   - Copier les scripts via `scp`.
+   - Exécuter `kindle_dashboard_boot.sh` pour installer l'auto-start.
+
 ## Commandes utiles
 - **Activer manuellement les daemons** :
   ```sh
@@ -57,3 +71,6 @@
 - Le fichier `DASHBOARD_DISABLED` dans `/mnt/us/` désactive le dashboard.
 - Le scheduler vérifie la batterie et ajuste les cycles en conséquence.
 - Le WiFi est activé uniquement pendant les mises à jour.
+
+## Licence
+Ce projet est sous licence MIT. Voir le fichier [LICENSE](LICENSE) pour plus d'informations.
