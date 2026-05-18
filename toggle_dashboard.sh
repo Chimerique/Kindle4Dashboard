@@ -90,6 +90,9 @@ while true; do
 			touch "$FLAG_FILE"
 			show_status "OFF"
 			lipc-set-prop com.lab126.powerd preventScreenSaver 0
+			# Dashboard OFF : réactiver le WiFi pour usage normal de la tablette
+			lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null || true
+			lipc-set-prop com.lab126.wifid enable 1 2>/dev/null || true
 			sleep 1
 			/usr/sbin/eips -c
 		fi

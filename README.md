@@ -72,5 +72,33 @@ Kindle Dashboard HA transforme une Kindle 4 en un écran d'affichage dynamique p
 - Le scheduler vérifie la batterie et ajuste les cycles en conséquence.
 - Le WiFi est activé uniquement pendant les mises à jour.
 
+## Retour d'expérience
+- Les incidents de veille profonde, de USBNetwork et de reconnectivité WiFi sont documentés dans [docs/REX-2026-05-14.md](docs/REX-2026-05-14.md).
+- Le scheduler utilise maintenant une stratégie de sommeil robuste pour éviter les blocages lors des longues attentes.
+- Le dashboard garde l'écran actif en combinant la prévention de l'économiseur et de la suspension pendant l'affichage.
+
 ## Licence
 Ce projet est sous licence MIT. Voir le fichier [LICENSE](LICENSE) pour plus d'informations.
+
+## Décision : Désactivation de LinkSS pour le Dashboard
+
+### Problème rencontré
+LinkSS, utilisé pour gérer les économiseurs d'écran personnalisés, provoquait des conflits avec l'affichage dynamique du dashboard. Lorsque la Kindle entrait en veille, LinkSS reprenait la main et affichait une ancienne image mise en cache, écrasant l'image actuelle affichée par `eips`.
+
+### Solution adoptée
+- **Anti-doublons (CRITIQUE) :** `update_frame.sh` et `toggle_dashboard.sh` intègrent un mécanisme d'auto-nettoyage. Au lancement, chaque script identifie et tue les anciennes instances orphelines. C'est **indispensable** pour éviter les conflits d'affichage, les blocages réseau et les fuites de processus qui finissent par suspendre le scheduler.
+- **Maintien de `preventScreenSaver=1` :** Cela empêche LinkSS de s'activer, tout en permettant à l'écran e-ink de conserver l'image affichée par `eips` sans consommation d'énergie supplémentaire.
+- **Suppression de `framework restart` :** Cette commande redémarrait LinkSS et réinitialisait son cache, causant des comportements imprévisibles.
+
+### Pourquoi ne pas utiliser LinkSS ?
+L'écran e-ink est bistable, ce qui signifie qu'il peut conserver une image sans consommer d'énergie. En maintenant `preventScreenSaver=1`, nous évitons les interférences de LinkSS tout en profitant de cette propriété unique de l'écran.
+
+### Conséquences
+- **Dashboard activé :** L'image affichée par `eips` reste visible en permanence, même après plusieurs cycles de veille.
+- **Dashboard désactivé :** `preventScreenSaver=0` est rétabli, et la Kindle retrouve son comportement normal avec LinkSS actif.
+
+### Notes importantes
+- Le fichier `/mnt/us/KEEP_WIFI` permet de forcer le maintien du WiFi entre les cycles (très utile pour la maintenance SSH).
+- Le fichier `/mnt/us/DASHBOARD_DISABLED` dans `/mnt/us/` désactive le dashboard.
+- Cette configuration est optimale pour un usage dédié au dashboard. Si LinkSS est nécessaire pour d'autres fonctionnalités (ex. affichage de couvertures de livres), des ajustements seront nécessaires.
+- Le CPU entre toujours en veille légère (light sleep) entre les cycles, garantissant une consommation minimale de la batterie.

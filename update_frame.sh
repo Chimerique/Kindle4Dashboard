@@ -11,8 +11,18 @@ TMP_IMAGE="${TMP_IMAGE:-/tmp/frame.png}"
 SAVE_PATH="${SAVE_PATH:-/mnt/us/linkss/screensavers/ha_dashboard.png}"
 RETRIES="${RETRIES:-12}"
 SLEEP_SEC="${SLEEP_SEC:-5}"
-# Variables de veille : gérées par kindle_scheduler.sh
-WIFI_ENABLED_BY_SCRIPT=0
+NO_WIFI="${NO_WIFI:-0}"
+
+# --- ANTI-DOUBLONS : Tuer les autres instances du même script ---
+MY_PID=$$
+# On cherche les processus portant le même nom de fichier, en ignorant notre propre PID
+OTHER_PIDS=$(ps | grep "[u]pdate_frame.sh" | awk '{print $1}' | grep -v "^$MY_PID$")
+if [ -n "$OTHER_PIDS" ]; then
+    echo "Nettoyage d'anciennes instances : $OTHER_PIDS"
+    # shellcheck disable=SC2086
+    kill -9 $OTHER_PIDS 2>/dev/null
+    sleep 1
+fi
 
 log() {
     level="$1"; shift
@@ -64,16 +74,17 @@ done
 log "INFO" "=== Début de mise à jour ==="
 
 cleanup() {
+    # Libérer le verrou watchdog
+    rm -f /tmp/wifi_busy 2>/dev/null || true
     # Toujours réactiver la veille naturelle à la sortie
     lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null || true
-    if [ "$WIFI_ENABLED_BY_SCRIPT" -eq 1 ] && [ "$NO_WIFI" -eq 0 ]; then
-        lipc-set-prop com.lab126.wifid enable 0 2>/dev/null || true
+    # Économie batterie : éteindre UNIQUEMENT le hardware WiFi (radio), pas le daemon wifid.
+    # Ne jamais appeler "lipc-set-prop com.lab126.wifid enable 0" : cela réinitialise
+    # la base wifid.conf et efface le profil NoTrespassing → perd la connexion définitivement.
+    if [ "$NO_WIFI" -eq 0 ]; then
         lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null || true
-        log "INFO" "Wi‑Fi éteint par cleanup"
     fi
-    log "INFO" "=== Fin de mise à jour ==="
 }
-
 trap 'cleanup' EXIT INT TERM
 
 if [ -f "$FLAG_DISABLED" ]; then
@@ -86,24 +97,42 @@ lipc-set-prop com.lab126.powerd preventScreenSaver 1 || true
 
 enable_wifi() {
     if [ "$NO_WIFI" -eq 1 ]; then
-        log "INFO" "--no-wifi set, skip enabling Wi‑Fi"
+        log "INFO" "--no-wifi set, skip WiFi check"
         return 0
     fi
-    log "INFO" "Activation du Wi‑Fi"
-    lipc-set-prop com.lab126.cmd wirelessEnable 1 || true
-    lipc-set-prop com.lab126.wifid enable 1 || true
-    lipc-set-prop com.lab126.framework dismissDialog 1 || true
-    WIFI_ENABLED_BY_SCRIPT=1
+    # Signaler au watchdog de ne pas interférer pendant le téléchargement
+    touch /tmp/wifi_busy
+    # Allumer le hardware WiFi (radio) — cleanup() l'éteint via wirelessEnable 0
+    log "INFO" "Activation hardware WiFi (wirelessEnable 1)"
+    lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null || true
+    # Vérifier que wifid daemon est actif (ne jamais le désactiver, juste la radio)
+    WIFID_EN=$(lipc-get-prop -i com.lab126.wifid enable 2>/dev/null || echo "0")
+    if [ "$WIFID_EN" != "1" ]; then
+        log "WARN" "wifid était désactivé — réactivation"
+        lipc-set-prop com.lab126.wifid enable 1 2>/dev/null || true
+        lipc-set-prop com.lab126.framework dismissDialog 1 2>/dev/null || true
+    fi
 }
 
 wait_for_ip() {
     log "INFO" "Attente d'une adresse IP valide... (interface $WIFI_IF)"
     i=0
+    DHCP_TRIED=0
     while [ $i -lt "$RETRIES" ]; do
         IP=$(ifconfig "$WIFI_IF" 2>/dev/null | grep 'inet addr' | cut -d: -f2 | cut -d' ' -f1)
         if [ -n "$IP" ] && [ "$IP" != "127.0.0.1" ]; then
             log "INFO" "Connecté ! IP: $IP (après $(( (i+1) * SLEEP_SEC ))s)"
             return 0
+        fi
+        # Si wpa_supplicant est connecté (COMPLETED) mais pas encore d'IP, lancer udhcpc
+        if [ "$DHCP_TRIED" -eq 0 ]; then
+            WPA_STATE=$(wpa_cli -i "$WIFI_IF" status 2>/dev/null | grep 'wpa_state=' | cut -d= -f2)
+            if [ "$WPA_STATE" = "COMPLETED" ]; then
+                log "INFO" "WPA2 connecté, lancement udhcpc..."
+                udhcpc -i "$WIFI_IF" -n -q -t 5 2>/dev/null || true
+                DHCP_TRIED=1
+                continue
+            fi
         fi
         i=$((i+1))
         log "INFO" "Pas encore d'IP (tentative $i/$RETRIES)"
@@ -113,7 +142,7 @@ wait_for_ip() {
 }
 
 ensure_gateway() {
-    GATEWAY=$(ip route 2>/dev/null | grep default | awk '{print $3}')
+    GATEWAY=$(route -n 2>/dev/null | grep '^0\.0\.0\.0' | awk '{print $2}' | head -1)
     if [ -z "$GATEWAY" ]; then
         if [ -n "$GATEWAY_FALLBACK" ]; then
             log "WARN" "Aucune gateway, ajout de fallback $GATEWAY_FALLBACK"
@@ -138,13 +167,13 @@ download_image() {
 
 show_image() {
     log "INFO" "Affichage de l'image"
-    # Copier dans le dossier screensaver linkss (mounté via FUSE sur /opt/amazon/screen_saver/600x800/)
+    # Copier EN PREMIER pour que LinkSS lise la bonne image au prochain réveil
     cp "$TMP_IMAGE" "$SAVE_PATH" 2>/dev/null || log "WARN" "Impossible de sauvegarder $SAVE_PATH"
-    # Forcer le passage en screensaver pour afficher le dashboard immédiatement
-    lipc-set-prop com.lab126.powerd screenSaverActivation 1 2>/dev/null || true
-    # Rafraîchir l'affichage e-ink avec notre image (full-refresh)
+    # Affichage immédiat via eips (e-ink direct, sans passer par le framework)
     /usr/sbin/eips -f -g "$TMP_IMAGE" 2>/dev/null || /usr/sbin/eips -g "$TMP_IMAGE" || true
-    log "INFO" "Image affichée + screensaver activé"
+    log "INFO" "Image affichée (eips) et sauvegardée pour LinkSS"
+    # NE PAS faire framework restart : cela réinitialise LinkSS qui recharged alors
+    # son état précédent et efface la nouvelle image au prochain réveil.
 }
 
 enable_wifi

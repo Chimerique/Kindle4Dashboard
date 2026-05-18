@@ -57,3 +57,9 @@
 - Le fichier `DASHBOARD_DISABLED` dans `/mnt/us/` désactive le dashboard.
 - Le scheduler vérifie la batterie et ajuste les cycles en conséquence.
 - Le WiFi est activé uniquement pendant les mises à jour.
+
+## Retour d'expérience opérationnel
+- Pour éviter les suspensions longues qui figent le scheduler, le script principal utilise un sommeil par paliers avec vérification du temps écoulé.
+- L'affichage du dashboard doit maintenir `preventScreenSaver=1` et `preventSuspend=1` pendant les cycles actifs.
+- USBNetwork peut être relancé automatiquement au boot pour conserver un accès SSH de secours sur `192.168.15.244`.
+- En cas de blocage WiFi, vérifier la présence d'un réseau valide dans `/etc/wpa_supplicant.conf` et le réglage `ap_scan=1`.

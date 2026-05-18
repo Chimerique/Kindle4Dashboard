@@ -1,0 +1,83 @@
+#!/bin/sh
+#####################################################################
+## Purpose:
+##   launcher script for wpa_supplicant
+##
+
+_FUNCTIONS=/etc/rc.d/functions
+. ${_FUNCTIONS}
+
+
+WPA_IFACE=${IFACE:-"wlan0"}
+WPA_SUP_BIN="/usr/bin/wpa_supplicant"
+WPA_CLI_BIN="/usr/bin/wpa_cli"
+WPA_SUP_CONF="-t -c /etc/wpa_supplicant.conf -i $WPA_IFACE -s"
+
+
+# quit if executables are not installed
+if [ ! -x "$WPA_SUP_BIN" ] || [ ! -x "$WPA_CLI_BIN" ]; then
+	msg "Error: Executable(s) missing" E >&2
+	exit 2
+fi
+
+do_start () {
+        # Wait for the driver to be loaded, otherwise the supplicant exits
+        # because of failing ioctl() calls.
+        i=0
+        while [ $i -lt 10 ]; do
+            # Check to see if the driver is ready
+            if is_wlan0_ready; then
+                break
+            else
+                sleep 2
+            fi
+            i=$(($i + 1))
+        done
+        if [ $i -lt 10 ]; then
+	    start-stop-daemon -o -S -b -x $WPA_SUP_BIN -- $WPA_SUP_CONF "$@"
+	    msg "wpa supplicant started" I
+            return 0
+        else
+	    msg "wpa supplicant NOT started - timed out waiting for wlan0 to be ready" E
+            return 1
+        fi
+}
+
+do_stop () {
+	start-stop-daemon -o -K -x $WPA_SUP_BIN
+	msg "wpa supplicant stopped" W
+        return 0
+}
+
+do_forcestop () {
+	start-stop-daemon -o -K -s KILL -x $WPA_SUP_BIN
+	msg "wpa supplicant force stopped" W
+        return 0
+}
+
+case $1 in 
+	start)
+                shift
+		do_start "$@"
+		;;
+
+	stop)
+		do_stop
+		;;
+	
+	forcestop)
+		do_forcestop
+		;;
+	
+	restart)
+		do_stop
+		sleep 2
+                shift
+		do_start "$@"
+		;;
+	*)
+		msg "Usage: $0 {start|stop|restart}" W >&2
+		exit 1
+		;;
+esac
+# Exit with return code from do_*
